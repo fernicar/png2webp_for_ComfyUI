@@ -10,7 +10,7 @@ This repository contains a Python script to convert PNG images to WebP format. T
 - Option to save images with lossless compression.
 - Preserve original ComfyUI’s workflow.
 - Preserve original image datetime attributes.
-- Option to delete original PNG images after conversion.
+- Option to delete original PNG images after conversion (send to Recycle bin).
 
 ## Requirements
 
