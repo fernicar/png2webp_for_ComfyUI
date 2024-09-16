@@ -1,7 +1,7 @@
 # png2webp-for-ComfyUI (PNG to WebP Converter)
-A PNG converter to WebP while keeping ComfyUI embedded workflow and datetime attributes.
+A PNG converter to WebP while keeping [ComfyUI](https://github.com/comfyanonymous/ComfyUI) embedded workflow and datetime attributes.
 
-This repository contains a Python script to convert PNG images to WebP format. The script can also preserve the original image’s embedded metadata and datetime attributes, and optionally delete the original PNG files after conversion. If you need a converter for webui other than ComfyUI, you can check out this alternative converter: https://github.com/Takenoko3333/png2webp-for-a1111-and-NAI
+This repository contains a Python script to convert PNG images to WebP format. The script can also preserve the original image’s embedded metadata and datetime attributes, and optionally delete the original PNG files after conversion. If you need a converter for webui other than [ComfyUI](https://github.com/comfyanonymous/ComfyUI), you can check out this alternative converter: https://github.com/Takenoko3333/png2webp-for-a1111-and-NAI
 
 ## Features
 
