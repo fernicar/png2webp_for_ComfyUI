@@ -36,7 +36,7 @@ This repository contains a Python script to convert PNG images to WebP format. T
 To convert PNG images to WebP format, run the script with the following command:
 
 ```sh
-python convert.py --path /path/to/png/images --delete True
+python png2webp.py --path /path/to/png/images --delete True
 ```
 
 ### Arguments
@@ -47,7 +47,7 @@ python convert.py --path /path/to/png/images --delete True
 ## Example
 
 ```sh
-python convert.py --path ./images --delete True
+python png2webp.py --path ./images --delete True
 ```
 
 This command will convert all PNG images in the `./images` directory to WebP format and send the original PNG images to the recycle bin.
