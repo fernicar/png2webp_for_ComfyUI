@@ -22,8 +22,8 @@ This repository contains a Python script to convert PNG images to WebP format. T
 
 1. Clone the repository:
     ```sh
-    git clone https://github.com/fernicar/png2webp-for-ComfyUI.git
-    cd png2webp-for-ComfyUI
+    git clone https://github.com/fernicar/png2webp_for_ComfyUI.git
+    cd png2webp_for_ComfyUI
     ```
 
 2. Install the required packages:
