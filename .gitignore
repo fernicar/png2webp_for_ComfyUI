@@ -2,3 +2,4 @@ __pycache__/
 .venv/
 venv/
 vs.code-workspace
+png2webp_conversion.log

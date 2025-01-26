@@ -45,24 +45,28 @@ The script automatically logs all conversion operations to 'png2webp_conversion.
 
 To convert PNG images to WebP format, here are some example commands:
 
+Basic Usage (80% quality, good for most cases)
 ```sh
-# Basic Usage (80% quality, good for most cases)
 python png2webp.py --path ./images --quality 80
 ```
+
+Faster Conversion (method 4 is slightly faster than default 6)
 ```sh
-# Faster Conversion (method 4 is slightly faster than default 6)
 python png2webp.py --path ./images --quality 80 --method 4
 ```
+
+Use current datetime instead of original
 ```sh
-# Use current datetime instead of original
 python png2webp.py --path ./images --quality 80 --use_current_date
 ```
+
+Delete original PNG files after conversion (requires send2trash)
 ```sh
-# Delete original PNG files after conversion (requires send2trash)
 python png2webp.py --path ./images --quality 80 --delete_after
 ```
+
+Lossless Conversion (slower process, almost same size as PNG)
 ```sh
-# Lossless Conversion (slower process, almost same size as PNG)
 python png2webp.py --path ./images --lossless --quality 80
 ```
 
@@ -76,11 +80,9 @@ python png2webp.py --path ./images --lossless --quality 80
 - `--delete_after`: Send the PNG images to the recycle bin after converting to WebP (optional)
 
 ## Example
-
 ```sh
 python png2webp.py --path ./images --delete_after
 ```
-
 This command will convert all PNG images in the `./images` directory and subdirectoriesto WebP format and send the original PNG images to the recycle bin.
 
 ## Best Practices

@@ -1,0 +1,2 @@
+Pillow
+send2trash
