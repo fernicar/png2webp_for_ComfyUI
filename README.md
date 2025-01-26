@@ -5,18 +5,28 @@ This repository contains a Python script to convert PNG images to WebP format. T
 
 ## Features
 
-- Convert PNG images to WebP format.
-- Will search in subfolders.
-- Option to save images with lossless compression.
-- Preserve original ComfyUI’s workflow.
-- Preserve original image datetime attributes.
-- Option to delete original PNG images after conversion (send to Recycle bin).
+- Convert PNG images to WebP format
+- Will search in subfolders
+- Configurable quality settings (0-100)
+- Configurable compression method (0=fast, 6=better)
+- Option to save images with lossless compression
+- Preserve original ComfyUI's workflow
+- Preserve original image datetime attributes
+- Option to use current date instead of original datetime
+- Option to delete original PNG images after conversion (send to Recycle bin)
+- Detailed conversion logging to 'png2webp_conversion.log'
+
+## File Naming
+When converting files, the script automatically handles naming conflicts by appending a counter (e.g., image_1.webp, image_2.webp) if a file with the same name already exists.
+
+## Logging
+The script automatically logs all conversion operations to 'png2webp_conversion.log', providing detailed information about each conversion process including success and any potential errors.
 
 ## Requirements
 
 - Python 3.x
 - Pillow
-- send2trash
+- send2trash (optional, required only for delete functionality)
 
 ## Installation
 
@@ -33,24 +43,59 @@ This repository contains a Python script to convert PNG images to WebP format. T
 
 ## Usage
 
-To convert PNG images to WebP format, run the script with the following command:
+To convert PNG images to WebP format, here are some example commands:
 
 ```sh
-python png2webp.py --path /path/to/png/images --delete True
+# Basic Usage (80% quality, good for most cases)
+python png2webp.py --path ./images --quality 80
+```
+```sh
+# Faster Conversion (method 4 is slightly faster than default 6)
+python png2webp.py --path ./images --quality 80 --method 4
+```
+```sh
+# Use current datetime instead of original
+python png2webp.py --path ./images --quality 80 --use_current_date
+```
+```sh
+# Delete original PNG files after conversion (requires send2trash)
+python png2webp.py --path ./images --quality 80 --delete_after
+```
+```sh
+# Lossless Conversion (slower process, almost same size as PNG)
+python png2webp.py --path ./images --lossless --quality 80
 ```
 
 ### Arguments
 
-- `--path`: Path to the directory containing PNG images (required).
-- `--delete`: (Optional) Send the PNG images to the recycle bin after converting to WebP. Defaults to `False`.
+- `--path`: Path to the directory containing PNG images (required)
+- `--quality`: WebP quality (0-100, default: 80)
+- `--method`: Compression method (0=fast, 6=better, default: 6)
+- `--lossless`: Use lossless compression (optional)
+- `--use_current_date`: Use current date instead of original file datetime (optional)
+- `--delete_after`: Send the PNG images to the recycle bin after converting to WebP (optional)
 
 ## Example
 
 ```sh
-python png2webp.py --path ./images --delete True
+python png2webp.py --path ./images --delete_after
 ```
 
-This command will convert all PNG images in the `./images` directory to WebP format and send the original PNG images to the recycle bin.
+This command will convert all PNG images in the `./images` directory and subdirectoriesto WebP format and send the original PNG images to the recycle bin.
+
+## Best Practices
+- For most use cases, the default quality setting of 80 provides a good balance between size and quality
+- Use `--method 4` for faster conversion if speed is priority
+- The `--lossless` option with `--quality 100` will significantly increase conversion time
+- Always backup important files before using the `--delete_after` option
+
+## Output Information
+During conversion, the script displays:
+- Input and output filenames
+- Applied settings and defaults
+- Image dimensions
+- Preserved metadata
+- Conversion status
 
 ## Code Overview
 
