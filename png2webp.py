@@ -100,7 +100,7 @@ def saveWebp(input_filename: str, lossless: bool = False, quality: int = 100, me
         else:
             ignored_settings.append('--lossless')
     
-        if quality != 80:  # Only show if not default
+        if quality != 90:  # Only show if not default
             user_settings.append(f'--quality {quality}')
         else:
             defaults_settings.append(f'--quality {quality}')
@@ -132,7 +132,7 @@ def saveWebp(input_filename: str, lossless: bool = False, quality: int = 100, me
         logging.info("-" * 50)
         # Return information about the output image
         return {
-            "filename": output_filename,
+            "filename": str(output_filename),
         }
 # Attempt to import send2trash
 try:
@@ -140,14 +140,14 @@ try:
 except ImportError:
     send2trash = None  # Set to None if the import fails
 
-def convert_png_to_webp(input_filename, lossless: bool = False, quality: int = 80, method: int = 6, use_current_date: bool = False, delete_after: bool = False):
+def convert_png_to_webp(input_filename, lossless: bool = False, quality: int = 90, method: int = 6, use_current_date: bool = False, delete_after: bool = False):
     """
     Convert a PNG image to WebP format.
 
     Args:
         input_filename (str): The filename of the input image.
         lossless (bool, optional): Whether to save the image losslessly. Defaults to False.
-        quality (int, optional): The quality of the output image. Defaults to 80.
+        quality (int, optional): The quality of the output image. Defaults to 90.
         method (int, optional): The compression method to use. Quality/speed trade-off (0=fast, 6=slower-better). Defaults to 6.
         use_current_date (bool, optional): Use current date instead of copying original file datetime. Defaults to False.
         delete_after (bool, optional): send to the recycle bin the input image after converting to webp. Defaults to False.
@@ -160,49 +160,50 @@ def convert_png_to_webp(input_filename, lossless: bool = False, quality: int = 8
     
     if not input_filename.lower().endswith('.png'):
         raise ValueError("Input file must be a PNG image")
+    
     error_saving = False
+    results = None
     try:
         results = saveWebp(input_filename, lossless=lossless, quality=quality, method=method, use_current_date=use_current_date, delete_after=delete_after)
-        # print(results)
 
     except Exception as e:
         logging.error(f"Error converting {input_filename}: {str(e)}")
         error_saving = True
 
-    if not use_current_date and not error_saving:  # Copy the original file's datetime attributes
+    if not use_current_date and not error_saving and results:  # Copy the original file's datetime attributes
         shutil.copystat(input_filename, results['filename'])
 
     # Check if send2trash is available
-    if delete_after and not error_saving:
+    if delete_after and not error_saving and results:
         if send2trash is None:
-            user_input = input("The 'send2trash' module is not installed. Would you like to continue without deleting the original PNG files? (yes/no): ")
-            if user_input.lower() == 'no':
-                print("Please install 'send2trash' and run the script again.")
-                return
-            else:
-                print("Continuing without deleting the original files.")
+            # Don't prompt for input in GUI context - just log the warning
+            logging.warning("The 'send2trash' module is not installed. Cannot delete original PNG file.")
         else:
-            send2trash.send2trash(input_filename)
+            try:
+                send2trash.send2trash(input_filename)
+                logging.info(f"Original file moved to recycle bin: {input_filename}")
+            except Exception as e:
+                logging.error(f"Failed to delete original file {input_filename}: {str(e)}")
 
 def main():
     notice="""
 example usage:
 
-    Basic Usage (80% quality, good for most cases):
-python png2webp.py --path ./images --quality 80
+    Basic Usage (90% quality, good for most cases):
+python png2webp.py --path ./images --quality 90
 
     Faster Conversion (method 4 is slightly faster than default 6, see if you like it):
-python png2webp.py --path ./images --quality 80 --method 4
+python png2webp.py --path ./images --quality 90 --method 4
 
     WebP files will use current datetime of creation:
-python png2webp.py --path ./images --quality 80 --use_current_date
+python png2webp.py --path ./images --quality 90 --use_current_date
 
     To delete the original PNG files after conversion will require  the 'send2trash' module to be installed.
-python png2webp.py --path ./images --quality 80 --delete_after
+python png2webp.py --path ./images --quality 90 --delete_after
     
     Lossless Conversion (slower process, almost same size to PNG, generally not advised for most scenarios):
     Caution: Utilizing --lossless combined with --quality 100 significantly increases conversion time.
-python png2webp.py --path ./images --lossless --quality 80 --use_current_date
+python png2webp.py --path ./images --lossless --quality 90 --use_current_date
 """
     parser = argparse.ArgumentParser(
         description='Convert PNG images to WebP format while preserving ComfyUI\'s metadata and timestamps.',
@@ -210,7 +211,7 @@ python png2webp.py --path ./images --lossless --quality 80 --use_current_date
     parser.add_argument('--path', help='Path to the directory containing PNG images', type=str, required=True)
     parser.add_argument('--delete_after', help='Send to the recycle bin the PNG images after converting to WebP', action='store_true', default=False)
     parser.add_argument('--use_current_date', help='Use current date instead of copying original file datetime', action='store_true', default=False)
-    parser.add_argument('--quality', help='WebP quality (0-100)', type=int, default=80)
+    parser.add_argument('--quality', help='WebP quality (0-100)', type=int, default=90)
     parser.add_argument('--lossless', help='Use lossless compression', action='store_true', default=False)
     parser.add_argument('--method', help='Compression method (0=fast, 6=better)', type=int, choices=range(7), default=6)
     
