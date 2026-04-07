@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WebP/PNG Metadata Viewer & Extractor GUI Application
+WebP/PNG/Jpeg Metadata Viewer & Extractor GUI Application
 View and extract parts of embedded ComfyUI metadata using regex patterns.
 Supports capture groups for extracting specific parts of matches.
 Supports selecting specific matches from files with multiple matches.
@@ -26,97 +26,374 @@ from PySide6.QtGui import QFont
 
 from PIL import Image
 from PIL.ExifTags import TAGS
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+# Debug logging toggle
+DEBUG = True
+
+def debug_log(message: str):
+    """Print debug log if DEBUG is enabled."""
+    if DEBUG:
+        print(f"🔍 DEBUG: {message}", flush=True)
 
 
 class MetadataExtractor:
-    """Extracts metadata from PNG and WebP files."""
+    """Extracts metadata from PNG, WebP and Jpeg files."""
     
     @staticmethod
-    def extract_from_png(filepath: str) -> Dict[str, str]:
+    def _extract_raw_unicode_metadata(filepath: str) -> Optional[str]:
+        """
+        Shared helper: Read file directly from disk and search for UNICODE UserComment.
+        This bypasses PIL which corrupts/modifies EXIF bytes.
+        This is the only method that actually works for Civitai files.
+        """
+        debug_log(f"🔧 _extract_raw_unicode_metadata() START")
+        try:
+            with open(filepath, 'rb') as f:
+                file_data = f.read()
+                u_marker = b'UNICODE\x00\x00'
+                u_offset = file_data.find(u_marker)
+                debug_log(f"🔧 UNICODE marker found at offset: {u_offset}")
+                if u_offset <= 0:
+                    debug_log(f"🔧 _extract_raw_unicode_metadata() FAIL: no UNICODE marker")
+                    return None
+                
+                user_comment_data = file_data[u_offset + len(u_marker):]
+                debug_log(f"🔧 UserComment data length: {len(user_comment_data)} bytes")
+                
+                # CIVITAI BUG FIX: Metadata ends long before buffer ends!
+                # Try progressive cutoffs until something decodes correctly
+                original_length = len(user_comment_data)
+                decoded = None
+                used_encoding = None
+                # Try cutoffs at 16kb, 8kb, 4kb, 2kb, 1kb
+                for cutoff in [16384, 8192, 4096, 2048, 1024]:
+                    if len(user_comment_data) > cutoff:
+                        test_buffer = user_comment_data[:cutoff]
+                        debug_log(f"🔧 Testing cutoff at {cutoff} bytes")
+                        
+                        # Try all encodings on this shorter buffer
+                        for encoding in ['utf-16le', 'utf-16be', 'utf-8']:
+                            try:
+                                test_decoded = test_buffer.decode(encoding, errors='strict')
+                                # Verify this actually looks like english text
+                                if ' ' in test_decoded and any(c.islower() for c in test_decoded[:100]):
+                                    decoded = test_decoded
+                                    used_encoding = encoding
+                                    user_comment_data = test_buffer
+                                    debug_log(f"🔧 ✅ Successfully decoded with {encoding} at cutoff {cutoff}")
+                                    break
+                            except:
+                                continue
+                        
+                        if decoded:
+                            break
+                
+                # If still no success, try full buffer with replace mode
+                if not decoded:
+                    decoded = user_comment_data.decode('utf-16le', errors='replace')
+                    debug_log(f"🔧 Fallback decoding with utf-16le replace")
+                
+                if not decoded:
+                    debug_log(f"🔧 Fallback decoding with utf-16be replace")
+                    decoded = user_comment_data.decode('utf-16be', errors='replace')
+                
+                decoded = decoded.rstrip('\x00')
+                debug_log(f"🔧 Decoded text length: {len(decoded)}")
+                debug_log(f"🔧 First 100 chars: {repr(decoded[:100])}")
+                
+                # Verify this looks like actual generation metadata
+                valid_markers = ('Negative prompt:', 'Steps:', 'BREAK', 'Model:', 'Civitai resources', 'Created Date:')
+                found_markers = [marker for marker in valid_markers if marker in decoded]
+                debug_log(f"🔧 Found valid markers: {found_markers}")
+                
+                if decoded and any(marker in decoded for marker in valid_markers):
+                    debug_log(f"🔧 ✅ VALID METADATA FOUND!")
+                    return decoded
+                else:
+                    debug_log(f"🔧 ❌ No valid markers found")
+                
+                return None
+        except Exception as e:
+            debug_log(f"🔧 ❌ CRASH in raw reader: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    @staticmethod
+    def _parse_civitai_parameters(parameters: str, metadata: Dict[str, str]):
+        """Shared helper: Parse CivitAI/A1111 parameters string into structured fields."""
+        metadata['parameters'] = parameters
+        
+        if 'Negative prompt:' in parameters:
+            positive, _, rest = parameters.partition('Negative prompt:')
+            metadata['positive_prompt'] = positive.strip()
+            if 'Steps:' in rest:
+                negative, _, params = rest.partition('\nSteps:')
+                metadata['negative_prompt'] = negative.strip()
+                if params:
+                    metadata['generation_params'] = "Steps:" + params.strip()
+            else:
+                metadata['negative_prompt'] = rest.strip()
+        elif 'Steps:' in parameters:
+            positive, _, params = parameters.partition('\nSteps:')
+            metadata['positive_prompt'] = positive.strip()
+            metadata['generation_params'] = "Steps:" + params.strip()
+        else:
+            metadata['positive_prompt'] = parameters.strip()
+    
+    @staticmethod
+    def _extract_xmp_metadata(img, metadata: Dict[str, str]):
+        """Extract CivitAI metadata from XMP tags."""
+        if 'XML:com.adobe.xmp' not in img.info:
+            return
+        
+        xmp_data = img.info['XML:com.adobe.xmp']
+        if isinstance(xmp_data, bytes):
+            xmp_data = xmp_data.decode('utf-8', errors='replace')
+        
+        import re
+        
+        # Pattern 1: Standard dc:description with RDF li
+        desc_match = re.search(r'<dc:description>(.*?)</dc:description>', xmp_data, re.DOTALL)
+        if desc_match:
+            desc_content = desc_match.group(1)
+            prompt_match = re.search(r'<rdf:li[^>]*>(.*?)</rdf:li>', desc_content, re.DOTALL)
+            if prompt_match:
+                parameters = prompt_match.group(1).strip()
+                parameters = parameters.replace('<', '<').replace('>', '>').replace('&', '&')
+                metadata['parameters'] = parameters
+        
+        # Pattern 2: Direct xmp:Description with parameters attribute
+        if 'parameters' not in metadata:
+            param_match = re.search(r'parameters="([^"]+)"', xmp_data, re.DOTALL)
+            if param_match:
+                parameters = param_match.group(1)
+                parameters = parameters.replace('<', '<').replace('>', '>').replace('&', '&')
+                metadata['parameters'] = parameters
+        
+        # Pattern 3: Try any text content that looks like CivitAI prompt
+        if 'parameters' not in metadata:
+            if ('Steps:' in xmp_data or 'Seed:' in xmp_data or 'Civitai resources' in xmp_data):
+                clean_data = re.sub(r'<[^>]+>', '', xmp_data)
+                clean_data = clean_data.replace('<', '<').replace('>', '>').replace('&', '&')
+                clean_data = '\n'.join([line.strip() for line in clean_data.splitlines() if line.strip()])
+                if len(clean_data) > 50:
+                    metadata['parameters'] = clean_data
+        
+        # Parse parameters if found
+        if 'parameters' in metadata:
+            MetadataExtractor._parse_civitai_parameters(metadata['parameters'], metadata)
+    
+    @staticmethod
+    def _extract_exif_usercomment(exif, metadata: Dict[str, str]):
+        """Extract and decode UserComment from EXIF data."""
+        user_comment_tag = 37510
+        value = None
+        
+        if user_comment_tag in exif:
+            value = exif[user_comment_tag]
+        if not isinstance(value, bytes):
+            return
+        
+        try:
+            if value.startswith(b'ASCII\x00\x00\x00'):
+                value = value[8:].decode('ascii', errors='replace')
+            elif value.startswith(b'UNICODE\x00'):
+                # Try both endians for UNICODE
+                try:
+                    value = value[8:].decode('utf-16be', errors='replace')
+                except:
+                    try:
+                        value = value[8:].decode('utf-16le', errors='replace')
+                    except:
+                        value = value[8:].decode('utf-8', errors='replace')
+            elif value.startswith(b'UTF8\x00\x00\x00'):
+                value = value[8:].decode('utf-8', errors='replace')
+            else:
+                # Try all encodings in order
+                try:
+                    value = value.decode('utf-16be', errors='replace')
+                except:
+                    try:
+                        value = value.decode('utf-16le', errors='replace')
+                    except:
+                        value = value.decode('utf-8', errors='replace')
+        except:
+            value = str(value)
+        
+        # Validate and parse
+        if isinstance(value, str):
+            valid_markers = ('Negative prompt:', 'Steps:', 'BREAK', 'Civitai resources')
+            if any(marker in value for marker in valid_markers):
+                MetadataExtractor._parse_civitai_parameters(value, metadata)
+    
+    @staticmethod
+    def _extract_civitai_exif_fallback(exif, metadata: Dict[str, str]):
+        """Extract CivitAI metadata from EXIF tags as final fallback."""
+        if 'parameters' in metadata:
+            return
+        
+        MetadataExtractor._extract_exif_usercomment(exif, metadata)
+        
+        # Check remaining EXIF tags
+        for tag_id, value in exif.items():
+            if tag_id == 37510:
+                continue
+            if not isinstance(value, str):
+                continue
+            
+            valid_markers = ('Negative prompt:', 'Steps:', 'BREAK', 'Model:', 'Civitai resources')
+            if any(marker in value for marker in valid_markers):
+                MetadataExtractor._parse_civitai_parameters(value, metadata)
+                break
+    
+    @staticmethod
+    def _extract_comfyui_exif(exif, metadata: Dict[str, str]):
+        """Extract ComfyUI formatted metadata from EXIF tags."""
+        for tag_id, value in exif.items():
+            tag_name = TAGS.get(tag_id, f"Tag_{tag_id}")
+            
+            if isinstance(value, str):
+                if value.startswith("Prompt:"):
+                    json_str = value[7:]
+                    try:
+                        parsed = json.loads(json_str)
+                        metadata['prompt'] = json.dumps(parsed, indent=2, ensure_ascii=False)
+                    except (json.JSONDecodeError, TypeError):
+                        metadata['prompt'] = json_str
+                elif value.startswith("Workflow:"):
+                    json_str = value[9:]
+                    try:
+                        parsed = json.loads(json_str)
+                        metadata['workflow'] = json.dumps(parsed, indent=2, ensure_ascii=False)
+                    except (json.JSONDecodeError, TypeError):
+                        metadata['workflow'] = json_str
+                else:
+                    if ':' in value:
+                        key, _, json_str = value.partition(':')
+                        try:
+                            parsed = json.loads(json_str)
+                            metadata[key] = json.dumps(parsed, indent=2, ensure_ascii=False)
+                        except (json.JSONDecodeError, TypeError):
+                            metadata[key] = json_str
+                    else:
+                        metadata[tag_name] = str(value)
+            else:
+                metadata[tag_name] = str(value)
+    
+    @staticmethod
+    def extract_from_png(filepath: str, method: str = "comfyui") -> Dict[str, str]:
         """Extract metadata from a PNG file."""
         metadata = {}
         try:
             with Image.open(filepath) as img:
                 info = img.info
-                for key, value in info.items():
-                    if key in ('prompt', 'workflow'):
-                        try:
-                            parsed = json.loads(value)
-                            metadata[key] = json.dumps(parsed, indent=2, ensure_ascii=False)
-                        except (json.JSONDecodeError, TypeError):
-                            metadata[key] = value
-                    else:
-                        try:
-                            parsed = json.loads(value)
-                            metadata[key] = json.dumps(parsed, indent=2, ensure_ascii=False)
-                        except (json.JSONDecodeError, TypeError):
-                            metadata[key] = str(value)
+                
+                if method == "civitai":
+                    # First use the working raw disk reader
+                    raw_metadata = MetadataExtractor._extract_raw_unicode_metadata(filepath)
+                    if raw_metadata:
+                        MetadataExtractor._parse_civitai_parameters(raw_metadata, metadata)
+                    
+                    # Fallback to direct parameters key
+                    if 'parameters' not in metadata and 'parameters' in info:
+                        MetadataExtractor._parse_civitai_parameters(info['parameters'], metadata)
+                    # DO NOT FALLBACK TO COMFYUI HERE - we still need to check EXIF UserComment!
+                
+                if method == "comfyui":
+                    # ComfyUI format
+                    for key, value in info.items():
+                        if isinstance(value, bytes):
+                            # Decode bytes before trying to parse
+                            try:
+                                value = value.decode('utf-8', errors='replace')
+                            except:
+                                value = str(value)
+                        
+                        if key in ('prompt', 'workflow'):
+                            try:
+                                parsed = json.loads(value)
+                                metadata[key] = json.dumps(parsed, indent=2, ensure_ascii=False)
+                            except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+                                metadata[key] = value
+                        else:
+                            try:
+                                parsed = json.loads(value)
+                                metadata[key] = json.dumps(parsed, indent=2, ensure_ascii=False)
+                            except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+                                metadata[key] = str(value)
+                
+                # Always check EXIF for UserComment even in PNG files (CivitAI sometimes puts it here)
+                exif = img.getexif()
+                MetadataExtractor._extract_exif_usercomment(exif, metadata)
         except Exception as e:
-            metadata['error'] = f"Error reading PNG metadata: {str(e)}"
+            # Don't fail the whole extraction, just log error and return what we have
+            import traceback
+            traceback.print_exc()
+            if not metadata:
+                metadata['error'] = f"Error reading PNG metadata: {str(e)}"
         return metadata
     
     @staticmethod
-    def extract_from_webp(filepath: str) -> Dict[str, str]:
-        """Extract metadata from a WebP file (stored in EXIF tags)."""
+    def extract_from_webp(filepath: str, method: str = "comfyui") -> Dict[str, str]:
+        """Extract metadata from a WebP and Jpeg file (stored in EXIF tags)."""
         metadata = {}
         try:
             with Image.open(filepath) as img:
-                exif = img.getexif()
-                
-                if not exif:
-                    metadata['info'] = "No EXIF metadata found"
-                    return metadata
-                
-                for tag_id, value in exif.items():
-                    tag_name = TAGS.get(tag_id, f"Tag_{tag_id}")
+                # Extraction priority order (most reliable first)
+                if method == "civitai":
+                    # 1. Raw disk reader (THE ONLY ONE THAT ACTUALLY WORKS)
+                    raw_metadata = MetadataExtractor._extract_raw_unicode_metadata(filepath)
+                    if raw_metadata:
+                        MetadataExtractor._parse_civitai_parameters(raw_metadata, metadata)
                     
-                    if isinstance(value, str):
-                        if value.startswith("Prompt:"):
-                            json_str = value[7:]
-                            try:
-                                parsed = json.loads(json_str)
-                                metadata['prompt'] = json.dumps(parsed, indent=2, ensure_ascii=False)
-                            except (json.JSONDecodeError, TypeError):
-                                metadata['prompt'] = json_str
-                        elif value.startswith("Workflow:"):
-                            json_str = value[9:]
-                            try:
-                                parsed = json.loads(json_str)
-                                metadata['workflow'] = json.dumps(parsed, indent=2, ensure_ascii=False)
-                            except (json.JSONDecodeError, TypeError):
-                                metadata['workflow'] = json_str
-                        else:
-                            if ':' in value:
-                                key, _, json_str = value.partition(':')
-                                try:
-                                    parsed = json.loads(json_str)
-                                    metadata[key] = json.dumps(parsed, indent=2, ensure_ascii=False)
-                                except (json.JSONDecodeError, TypeError):
-                                    metadata[key] = json_str
-                            else:
-                                metadata[tag_name] = str(value)
-                    else:
-                        metadata[tag_name] = str(value)
+                    # 2. XMP metadata (newer CivitAI images)
+                    MetadataExtractor._extract_xmp_metadata(img, metadata)
+                    
+                    # 3. EXIF fallback
+                    exif = img.getexif()
+                    MetadataExtractor._extract_civitai_exif_fallback(exif, metadata)
+                else:
+                    # ComfyUI format
+                    exif = img.getexif()
+                    MetadataExtractor._extract_comfyui_exif(exif, metadata)
                         
         except Exception as e:
-            metadata['error'] = f"Error reading WebP metadata: {str(e)}"
+            metadata['error'] = f"Error reading WebP or Jpeg metadata: {str(e)}"
         return metadata
     
     @staticmethod
-    def extract(filepath: str) -> Dict[str, str]:
-        """Extract metadata from either PNG or WebP file."""
-        ext = Path(filepath).suffix.lower()
-        if ext == '.png':
-            return MetadataExtractor.extract_from_png(filepath)
-        elif ext == '.webp':
-            return MetadataExtractor.extract_from_webp(filepath)
-        else:
-            return {'error': f"Unsupported file format: {ext}"}
+    def extract(filepath: str, method: str = "comfyui") -> Dict[str, str]:
+        """Extract metadata from either PNG, WebP or Jpeg file."""
+        # First detect actual file format (not just extension)
+        try:
+            debug_log(f"🎯 START extract() file={filepath} method={method}")
+            
+            with Image.open(filepath) as img:
+                actual_format = img.format.lower() if img.format is not None else Path(filepath).suffix.lower().lstrip('.')
+                debug_log(f"📌 PIL detected actual format: {actual_format} (file extension: {Path(filepath).suffix})")
+                
+                if actual_format == 'png':
+                    debug_log(f"➡️  Calling extract_from_png()")
+                    result = MetadataExtractor.extract_from_png(filepath, method)
+                elif actual_format in ('webp', 'jpeg', 'jpg'):
+                    debug_log(f"➡️  Calling extract_from_webp()")
+                    result = MetadataExtractor.extract_from_webp(filepath, method)
+                else:
+                    result = {'error': f"Unsupported file format: {actual_format}"}
+                
+                debug_log(f"✅ EXTRACT COMPLETE. Found keys: {list(result.keys())}")
+                return result
+        except Exception as e:
+            debug_log(f"❌ extract() FAILED: {str(e)}")
+            return {'error': f"Error opening file: {str(e)}"}
     
     @staticmethod
-    def get_full_metadata(filepath: str) -> str:
+    def get_full_metadata(filepath: str, method: str = "comfyui") -> str:
         """Get all metadata as a single string for regex searching."""
-        metadata = MetadataExtractor.extract(filepath)
+        metadata = MetadataExtractor.extract(filepath, method)
         result = ""
         for key, value in metadata.items():
             result += f"{key}: {value}\n"
@@ -128,7 +405,7 @@ class MetadataViewerView(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PNG/WebP Metadata Viewer & Extractor")
+        self.setWindowTitle("PNG/WebP/Jpeg Metadata Viewer & Extractor")
         self.setMinimumSize(1200, 700)
         
         self.selected_files: List[str] = []
@@ -156,6 +433,16 @@ class MetadataViewerView(QMainWindow):
         title_label = QLabel("Metadata Viewer & Extractor")
         title_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        
+        # Extraction method toggle
+        header_layout.addWidget(QLabel("Method:"))
+        self.method_combo = QComboBox()
+        self.method_combo.addItem("ComfyUI (default)", "comfyui")
+        self.method_combo.addItem("CivitAI / A1111", "civitai")
+        self.method_combo.currentIndexChanged.connect(self.on_method_changed)
+        header_layout.addWidget(self.method_combo)
+        
         header_layout.addStretch()
         self.file_info_label = QLabel("No files loaded")
         header_layout.addWidget(self.file_info_label)
@@ -357,7 +644,7 @@ class MetadataViewerView(QMainWindow):
     def select_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "Select PNG/WebP Files", "", 
-            "Image Files (*.png *.webp);;PNG Files (*.png);;WebP Files (*.webp);;All Files (*)"
+            "Image Files (*.png *.webp *.jpeg *.jpg);;PNG Files (*.png);;WebP Files (*.webp);;Jpeg Files (*.jpeg *.jpg);;All Files (*)"
         )
         if files:
             self.add_files(files)
@@ -365,12 +652,12 @@ class MetadataViewerView(QMainWindow):
     def select_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder with Image Files")
         if folder:
-            image_files = list(Path(folder).rglob("*.png")) + list(Path(folder).rglob("*.webp"))
+            image_files = list(Path(folder).rglob("*.png")) + list(Path(folder).rglob("*.webp")) + list(Path(folder).rglob("*.jpeg")) + list(Path(folder).rglob("*.jpg"))
             if image_files:
                 self.add_files([str(f) for f in sorted(image_files)])
             else:
                 QMessageBox.warning(self, "No Image Files", 
-                    "No PNG or WebP files found in the selected folder.")
+                    "No PNG, WebP or Jpeg files found in the selected folder.")
                 
     def add_files(self, files: List[str]):
         for f in files:
@@ -394,7 +681,8 @@ class MetadataViewerView(QMainWindow):
     def load_metadata(self, filepath: str):
         self.status_bar.showMessage(f"Loading: {Path(filepath).name}")
         
-        self.current_metadata = MetadataExtractor.extract(filepath)
+        method = self.method_combo.currentData()
+        self.current_metadata = MetadataExtractor.extract(filepath, method)
         
         self.update_parsed_view()
         self.update_tree_view()
@@ -415,6 +703,17 @@ class MetadataViewerView(QMainWindow):
             self.parsed_text.append(self.current_metadata.get('info', 'No metadata found'))
             return
         
+        # First display CivitAI / A1111 format data if present
+        civitai_keys = ['parameters', 'positive_prompt', 'negative_prompt', 'generation_params']
+        for key in civitai_keys:
+            if key in self.current_metadata:
+                self.parsed_text.append(f"{'='*60}")
+                self.parsed_text.append(f"  {key.upper()}")
+                self.parsed_text.append(f"{'='*60}")
+                self.parsed_text.append(self.current_metadata[key])
+                self.parsed_text.append("")
+        
+        # Then display ComfyUI format data
         for key in ['prompt', 'workflow']:
             if key in self.current_metadata:
                 self.parsed_text.append(f"{'='*60}")
@@ -423,8 +722,9 @@ class MetadataViewerView(QMainWindow):
                 self.parsed_text.append(self.current_metadata[key])
                 self.parsed_text.append("")
         
+        # Then display all other remaining keys
         for key, value in self.current_metadata.items():
-            if key not in ('prompt', 'workflow', 'error', 'info'):
+            if key not in civitai_keys + ['prompt', 'workflow', 'error', 'info']:
                 self.parsed_text.append(f"{'='*60}")
                 self.parsed_text.append(f"  {key.upper()}")
                 self.parsed_text.append(f"{'='*60}")
@@ -466,6 +766,12 @@ class MetadataViewerView(QMainWindow):
             self.raw_text.append(f"\n[{key}]:")
             self.raw_text.append(value[:500] + ('...' if len(value) > 500 else ''))
             
+    def on_method_changed(self):
+        """Handle extraction method change."""
+        if self.current_file:
+            self.load_metadata(self.current_file)
+        self.on_regex_changed()
+    
     def on_tree_item_clicked(self, item: QTreeWidgetItem, column: int):
         key = item.text(0)
         if key in self.current_metadata:
@@ -533,7 +839,8 @@ class MetadataViewerView(QMainWindow):
             flags = 0 if case_sensitive else re.IGNORECASE
             regex = re.compile(pattern, flags | re.DOTALL)
             
-            full_metadata = MetadataExtractor.get_full_metadata(self.current_file)
+            method = self.method_combo.currentData()
+            full_metadata = MetadataExtractor.get_full_metadata(self.current_file, method)
             matches = list(regex.finditer(full_metadata))
             
             # Update current file matches
@@ -584,8 +891,9 @@ class MetadataViewerView(QMainWindow):
         total_matches = 0
         files_with_matches = 0
         
+        method = self.method_combo.currentData()
         for filepath in self.selected_files:
-            full_metadata = MetadataExtractor.get_full_metadata(filepath)
+            full_metadata = MetadataExtractor.get_full_metadata(filepath, method)
             matches = list(regex.finditer(full_metadata))
             
             if matches:
@@ -642,8 +950,9 @@ class MetadataViewerView(QMainWindow):
         # Get conflict handling mode
         conflict_mode = self.conflict_combo.currentIndex()  # 0=skip, 1=overwrite, 2=prepend, 3=append
         
+        method = self.method_combo.currentData()
         for filepath in self.selected_files:
-            full_metadata = MetadataExtractor.get_full_metadata(filepath)
+            full_metadata = MetadataExtractor.get_full_metadata(filepath, method)
             matches = list(regex.finditer(full_metadata))
             
             if matches:
@@ -754,7 +1063,7 @@ class MetadataViewerView(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("PNG/WebP Metadata Viewer & Extractor")
+    app.setApplicationName("PNG/WebP/Jpeg Metadata Viewer & Extractor")
     app.setApplicationVersion("1.0.0")
     
     window = MetadataViewerView()
